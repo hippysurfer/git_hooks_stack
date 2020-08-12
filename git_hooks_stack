@@ -1,0 +1,165 @@
+#!/bin/bash
+#
+# git_hooks_stack: a simple script to run global and local hit hooks.
+#
+#
+
+# Be a bit paraniod
+set -u
+
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(readlink -f "${0%/*}")"
+SCRIPT_PATH="$(readlink -f "$0")"
+
+DEBUG=${GIT_HOOKS_STACK_DEBUG:-0}
+
+# We want all output from the scripts to go to stderr so that git
+# will show it to the user.
+# Redirect output to stderr.
+exec 1>&2
+
+function usage() {
+	cat "${SCRIPT_DIR}/README.md"
+}
+
+function debug {
+	if [ "${DEBUG}" -ne 0 ]; then
+		echo "${SCRIPT_NAME}: DEBUG: $*"
+	fi
+}
+
+debug "Debug is on."
+
+# Respond to a cry for help before doing anything else.
+for arg in "$@"; do
+	case "$arg" in
+	-h | --help)
+		usage
+		exit 0
+		;;	
+	esac
+done
+
+# First check that required git config has been installed
+#
+GLOBAL_HOOKS_DIR="$(git config --get gitHookStack.hooksPath)"
+if [ $? -ne 0 ] || [ "X${GLOBAL_HOOKS_DIR}X" == "XX" ]; then
+	echo "FATAL: You need to set the gitHookStack.hooksPath key in git config."
+	echo "FATAL: e.g. git config --global gitHookStack.hooksPath <path-to-global-hooks>"
+	exit 1
+fi
+
+# This script is run as a symlink to a git hook, so the name of the hook can be
+# extracted from the script name.
+# Extract the name of the hook from the pathname of this script.
+HOOK_NAME="${SCRIPT_NAME}"
+
+# Construct the path to the global hooks.
+GLOBAL_HOOK_DIR="${GLOBAL_HOOKS_DIR}/${HOOK_NAME}.d"
+
+# The PWD that git sets when running scripts is the top of the
+# git repo. So the local hooks can be found in the .git directory directly
+# under the current directory.
+LOCAL_BARE_HOOK_DIR=".git/hooks"
+LOCAL_HOOK_DIR=".git/hooks/${HOOK_NAME}.d"
+
+#
+# This function is run if the user passes --init. It will create a symlink for
+# each githook in the directory set in the gitHookStack.hooksPath.
+#
+function init() {
+	# Check that we are running as the original script (not a symlink to it).
+	[ ! -h "${SCRIPT_PATH}" ] || {
+		echo "FATAL: can't run --init on symlink. Initialise using git_hooks_stack"
+		exit 1
+	}
+
+	# initialise symlinks and hook directories
+	[ -d "${GLOBAL_HOOKS_DIR}" ] || {
+
+		mkdir -p "${GLOBAL_HOOKS_DIR}" || {
+			echo "FATAL: failed to create the Global Hooks directory in: ${GLOBAL_HOOKS_DIR}"
+		}
+	}
+
+	cd "${GLOBAL_HOOKS_DIR}" || {
+		echo "FATAL: failed to change into ${GLOBAL_HOOKS_DIR}"
+		exit 1
+	}
+
+	echo "Initialising hooks in ${GLOBAL_HOOKS_DIR}..."
+	for hook in "applypatch-msg" "commit-msg" "fsmonitor-watchman" \
+		"post-update" "pre-applypatch" "pre-commit" \
+		"prepare-commit-msg" "pre-push" "pre-rebase" \
+		"pre-receive" "update"; do
+		if [ ! -e "${hook}" ]; then
+			echo "Creating: ${hook}"
+			ln -s "${SCRIPT_PATH}" "${hook}"
+		else
+			echo "${hook} already exists"
+		fi
+
+		if [ ! -e "${hook}.d" ]; then
+			echo "Creating: ${hook}.d"
+			mkdir "${hook}.d"
+		else
+			echo "${hook}.d already exists"
+		fi
+
+	done
+
+	exit 0
+}
+
+# Parse arguments. We are only interested in --init.
+# Anything else is ignored and passed on to the real hook scripts.
+for arg in "$@"; do
+	case "$arg" in
+	-i | --init)
+		init
+		exit 0
+		;;
+	esac
+done
+
+# Run the global hooks first (in lex order)
+
+# Stop if any fail.
+[ -d "${GLOBAL_HOOK_DIR}" ] && {
+	# Each executable file in the hook dir is assumed to be a hook
+	mapfile -t all_hooks < <(find "${GLOBAL_HOOK_DIR}" -executable -type f | sort)
+	for hook in "${all_hooks[@]}"; do
+		# Run the hook and exit if it did not return 0.
+		debug "Running: ${hook} ${*}"
+		"${hook}" "${@}" || {
+			echo "FATAL: hook ${hook} returned error: $?"
+			exit 1
+		}
+	done
+}
+
+# Run the local hooks
+
+# Start by running the bare hook if it is present.
+hook="${LOCAL_BARE_HOOK_DIR}/${HOOK_NAME}"
+[ -x "${hook}" ] && {
+	debug "Running: ${hook} ${*}"	
+	"${hook}" "${@}" || {
+		echo "FATAL: hook ${hook} returned error: $?"
+		exit 1
+	}
+}
+
+# Now run any hooks in a local .d directory (in lex order)
+[ -d "${LOCAL_HOOK_DIR}" ] && {
+	mapfile -t all_hooks < <(find "${LOCAL_HOOK_DIR}" -executable -type f | sort)	
+	for hook in "${all_hooks[@]}"; do
+		debug "Running: ${hook} ${*}"		
+		"${hook}" "${@}" || {
+			echo "FATAL: hook ${hook} returned error: $?"
+			exit 1
+		}
+	done
+}
+
+exit 0
