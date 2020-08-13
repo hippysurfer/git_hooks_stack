@@ -55,7 +55,7 @@ fi
 HOOK_NAME="${SCRIPT_NAME}"
 
 # Construct the path to the global hooks.
-GLOBAL_HOOK_DIR="${GLOBAL_HOOKS_DIR}/${HOOK_NAME}.d"
+GLOBAL_HOOK_DIR="$(eval echo "${GLOBAL_HOOKS_DIR//>}/${HOOK_NAME}.d")"
 
 # The PWD that git sets when running scripts is the top of the
 # git repo. So the local hooks can be found in the .git directory directly
